@@ -6,6 +6,8 @@ import googleapiclient.errors
 
 from youtube_transcript_api import YouTubeTranscriptApi
 
+from log import logging
+
 apikeys = json.load(open("../apikeys/keys.json","r+"))
 api_service_name = "youtube"
 api_version = "v3"
@@ -15,17 +17,19 @@ youtube = googleapiclient.discovery.build(
 def toDate(date):
     return datetime.strptime(date,'%Y-%m-%dT%H:%M:%SZ')
 
-def video_meta_data(vid,part="snippet,contentDetails"):
-	# meta data from youtube api, returns json 
-	request = youtube.videos().list(
-	    part=part,
-	    id=vid
-	)
-	response = request.execute()
+def video_meta_data(vids,part="snippet,contentDetails"):
+    logging.info('called yt.video_meta_data')
+    # meta data from youtube api, returns json 
+    request = youtube.videos().list(
+        part=part,
+        id=vids
+    )
+    response = request.execute()
 
-	return response
+    return response
 
 def channel_meta_data(cid,part="snippet,contentDetails,statistics"):
+    logging.info('called yt.channel_meta_data')
     request = youtube.channels().list(
         part=part,
         id=cid
@@ -35,6 +39,7 @@ def channel_meta_data(cid,part="snippet,contentDetails,statistics"):
     return response
 
 def playlistitems_meta_data(pid, part="snippet"):
+    logging.info('called yt.playlistitems_meta_data')
     nextToken = None
     previous_items = []
     while True:
@@ -56,9 +61,11 @@ def playlistitems_meta_data(pid, part="snippet"):
     return response
 
 def is_meta_data_valid(meta):
+    logging.info('called yt.is_meta_data_valid')
     return 'items' in meta and isinstance(meta['items'],list) and len(meta['items']) > 0
 
 def get_captions(vid):
+    logging.info('called yt.get_captions')
     try:
         res= YouTubeTranscriptApi.get_transcript(vid)
     except:
@@ -67,29 +74,38 @@ def get_captions(vid):
 
     return res
 
-def get_video_meta(vid):
-    final = {}
-    meta = video_meta_data(vid)
+def get_video_metas(vids):
+    logging.info('called yt.get_video_metas')
+    final = []
+    meta = video_meta_data(vids)
 
     if (not is_meta_data_valid(meta)):
         return final
 
-    snippet = meta['items'][0]['snippet']
-    contentDetails = meta['items'][0]['contentDetails']
+    for item in meta['items']:
+        video = {}
 
-    final['vid'] = vid
-    final['title'] = snippet['title']
-    final['date'] = toDate(snippet['publishedAt'])
-    final['categoryId'] = snippet['categoryId']
-    final['description'] = snippet['description']
-    final['channelId'] = snippet['channelId']
-    final['hasCaptions'] = contentDetails['caption']
-    final['duration'] = contentDetails['duration']
-    final['captions'] = get_captions(vid) if contentDetails['caption'] =='true' else []
+        vid = item['id']
+        snippet = item['snippet']
+        contentDetails = item['contentDetails']
+
+        video['vid'] = vid
+        video['title'] = snippet['title']
+        video['publishedAt'] = toDate(snippet['publishedAt'])
+        video['categoryId'] = snippet['categoryId']
+        video['description'] = snippet['description']
+        video['channelId'] = snippet['channelId']
+        video['hasCaptions'] = contentDetails['caption']
+        video['duration'] = contentDetails['duration']
+        video['captions'] = get_captions(vid) if contentDetails['caption'] =='true' else []
+        video['captionAttemps'] = 1
+
+        final.append(video)
 
     return final
 
 def get_channel_meta(cid):
+    logging.info('called yt.get_channel_meta')
     final = {}
     meta = channel_meta_data(cid)
 
@@ -102,13 +118,14 @@ def get_channel_meta(cid):
 
     final['cid'] = cid
     final['name'] = snippet['title']
-    final['created'] = toDate(snippet['publishedAt'])
+    final['publishedAt'] = toDate(snippet['publishedAt'])
     final['catalogId'] = contentDetails['relatedPlaylists']['uploads']
     final['videoCount'] = statistics['videoCount']
 
     return final
 
-def get_playlistitem_meta(pid, sdate=datetime(1970,1,1,1,1)):
+def get_playlistitem_ids(pid, sdate=datetime(1970,1,1)):
+    logging.info('called yt.get_playlistitem_ids')
     final = {}
 
     meta = playlistitems_meta_data(pid)
@@ -125,7 +142,34 @@ def get_playlistitem_meta(pid, sdate=datetime(1970,1,1,1,1)):
 
     return final
 
+def get_playlistitem_meta(pid):
+    logging.info('called yt.get_playlistitem_meta')
+    final = {}
+
+    meta = playlistitems_meta_data(pid)
+    if (not is_meta_data_valid(meta)):
+        return final
+
+    final['pid'] = pid
+    final['videos'] = []
+
+    for item in meta['items']:
+        video = {}
+        snippet = item['snippet']
+
+        video['vid'] = snippet['resourceId']['videoId']
+        video['title'] = snippet['title']
+        video['publishedAt'] = toDate(snippet['publishedAt'])
+        video['description'] = snippet['description']
+        video['channelId'] = snippet['channelId']
+        video['captionAttemps'] = 0
+
+        final['vids'].append(video)
+
+    return final
+
 def has_captions(vid):
+    logging.info('called yt.has_captions')
     meta = video_meta_data(vid)
     if (not is_meta_data_valid(meta)):
         return False
