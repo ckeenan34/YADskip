@@ -14,6 +14,8 @@ api_version = "v3"
 youtube = googleapiclient.discovery.build(
     api_service_name, api_version, developerKey=apikeys['youtube'])
 
+playlistBatchSize = 10
+
 def toDate(date):
     return datetime.strptime(date,'%Y-%m-%dT%H:%M:%SZ')
 
@@ -145,7 +147,7 @@ def get_playlistitem_meta(pid, stopdate=datetime(1970,1,1)):
     logging.info('called yt.get_playlistitem_meta')
     final = {}
 
-    meta = playlistitems_meta_data(pid,stopdate=stopdate,maxResults=50)
+    meta = playlistitems_meta_data(pid,stopdate=stopdate,maxResults=playlistBatchSize)
     if (not is_meta_data_valid(meta)):
         return final
 
