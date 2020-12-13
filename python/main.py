@@ -8,6 +8,9 @@ import pprint
 def populate():
     logging.info("called main.populate")
 
+    logging.info("!! Loading new channels from file")
+    mf.load_channels_from_file()
+
     logging.info("!! Updating the channels")
     mf.update_channels()
 
@@ -31,6 +34,9 @@ def populate():
     logging.info("!! SWEEEEEEEEPPPPPPPIIIIIINNNNNNNGGGGGG")
     mf.update_video_sweep()
     mf.add_captions_sweep()
+
+    logging.info("!! Ignoring old captions")
+    mf.ignore_empty_captions(30)
 
     logging.info("!! Updating the channels (again)")
     mf.update_channels()

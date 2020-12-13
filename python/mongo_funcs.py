@@ -6,9 +6,11 @@ import youtube_extraction as yt
 from log import logging
 
 from datetime import datetime, timedelta
+import csv
 
-client = MongoClient('mongodb://admin:<password>@192.168.0.18:27017')
-db=client.admin
+# client = MongoClient('mongodb://admin:<password>@192.168.0.18:27017')
+client = MongoClient('mongodb://localhost:27017/?connectTimeoutMS=30000&maxIdleTimeMS=600000')
+db=client.YADskip
 
 channels = db.channels
 videos = db.videos
@@ -21,6 +23,9 @@ sweep_limit = 0 # no limit
 no_captions = {"$or": [{"captions": {"$exists": False}},{"captions": {"$size": 0}},{"captions": None}]}
 try_for_captions = no_captions.copy()
 try_for_captions["captionAttemps"] = {"$lt": attempts_threshold}
+
+too_old_for_captions = try_for_captions.copy()
+too_old_for_captions["publishedAt"] = {"$lt":  datetime.now() - timedelta(days=30)}
 has_caps = {"$nor": [
     {"captions": {"$exists": False}},
     {"captions": {"$size": 0}},
@@ -106,6 +111,7 @@ def add_captions_sweep():
     caption_updates = []
     x= 0
     for video in cursor:
+        print(video['vid'])
         cap = yt.get_captions(video['vid'])
         caption_updates.append({
             "vid": video['vid'],
@@ -222,17 +228,15 @@ def get_stats(should_print=False):
 
     return final_stats
 
-# videos.find({"captions": {"$exists": True}}).count()
-# videos.find({"captions": {"$not": {"$size": 0}}}).count()
+def load_channels_from_file():
+    final = []
+    with open('../data/cids.csv',mode='r') as cids:
+        for line in csv.DictReader(cids):
+            final.append(line)
 
-# has_caps = {"$nor": [
-#     {"captions": {"$exists": False}},
-#     {"captions": {"$size": 0}},
-#     {"captions": None}
-# ]}
+    bulk_upsert_channels(final)
 
-# {$nor: [
-#     {captions: {$exists: false}},
-#     {captions: {$size: 0}},
-#     {captions: None}
-# ]}
+# Overwrite old (>diff days old) videos without captions so they go 
+# over the treshold and wont be checked for captions anymore
+def ignore_empty_captions(diff=30):
+    videos.update_many(too_old_for_captions, {"$set": {"captionAttemps": attempts_threshold}})

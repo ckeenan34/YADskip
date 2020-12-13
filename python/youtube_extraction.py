@@ -78,11 +78,9 @@ def playlistitems_meta_data(pid, part="snippet", stopdate=datetime(1970,1,1), ma
     return response
 
 def is_meta_data_valid(meta):
-    logging.info('called yt.is_meta_data_valid')
     return 'items' in meta and isinstance(meta['items'],list) and len(meta['items']) > 0
 
 def get_captions(vid):
-    logging.info('called yt.get_captions')
     try:
         res= YouTubeTranscriptApi.get_transcript(vid)
     except:
@@ -123,7 +121,6 @@ def get_video_metas(vids, include_captions = False):
     return final
 
 def get_channel_meta(cid):
-    logging.info('called yt.get_channel_meta')
     final = {}
     meta = channel_meta_data(cid)
 
@@ -163,6 +160,7 @@ def get_playlistitem_meta(pid, stopdate=datetime(1970,1,1)):
         video['publishedAt'] = toDate(snippet['publishedAt'])
         video['description'] = snippet['description']
         video['channelId'] = snippet['channelId']
+        video['captionAttemps'] = 0
 
         final['videos'].append(video)
 
