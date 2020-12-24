@@ -17,10 +17,10 @@ youtube = googleapiclient.discovery.build(
 playlistBatchSize = 10
 
 def toDate(date):
-    return datetime.strptime(date,'%Y-%m-%dT%H:%M:%SZ')
+    return datetime.strptime(date[:19],'%Y-%m-%dT%H:%M:%S')
 
 def video_meta_data(vids,part="snippet,contentDetails"):
-    logging.info('called yt.video_meta_data')
+    # logging.info('called yt.video_meta_data')
 
     final = None
     split_vids = vids.split(",")
@@ -52,6 +52,31 @@ def channel_meta_data(cid,part="snippet,contentDetails,statistics"):
     response = request.execute()
 
     return response
+
+#I'm tired I can name this however I want
+def multiple_channel_meta_datas(cids,part="snippet,contentDetails,statistics"):
+    logging.info('called yt.multiple_channel_meta_datas')
+
+    final = None
+    split_cids = cids.split(",")
+    
+    channel_limit = 50
+    for x in range(0,len(split_cids), channel_limit):
+        logging.info("on video #{} of #{}".format(x,len(split_cids)))
+        new_cids = ",".join(split_cids[x:x+channel_limit])
+        # meta data from youtube api, returns json 
+        request = youtube.channels().list(
+            part=part,
+            id=new_cids
+        )
+        response = request.execute()
+
+        if (final):
+            final["items"] += response["items"]
+        else:
+            final = response
+
+    return final
 
 def playlistitems_meta_data(pid, part="snippet", stopdate=datetime(1970,1,1), maxResults = 10):
     logging.info('called yt.playlistitems_meta_data')
@@ -90,12 +115,14 @@ def get_captions(vid):
     return res if res != [] else None
 
 def get_video_metas(vids, include_captions = False):
-    logging.info('called yt.get_video_metas')
+    # logging.info('called yt.get_video_metas')
     final = []
     meta = video_meta_data(vids)
 
     if (not is_meta_data_valid(meta)):
         return final
+
+    leftover = set(vids.split(","))
 
     for item in meta['items']:
         video = {}
@@ -103,6 +130,9 @@ def get_video_metas(vids, include_captions = False):
         vid = item['id']
         snippet = item['snippet']
         contentDetails = item['contentDetails']
+
+        if vid in leftover:
+            leftover.remove(vid)
 
         video['vid'] = vid
         video['title'] = snippet['title']
@@ -112,10 +142,20 @@ def get_video_metas(vids, include_captions = False):
         video['channelId'] = snippet['channelId']
         video['hasCaptions'] = contentDetails['caption']
         video['duration'] = contentDetails['duration']
+        video['status'] = True
         if (include_captions):
             video['captions'] = get_captions(vid) if contentDetails['caption'] =='true' else None
             video['captionAttemps'] = 1
 
+        final.append(video)
+    
+    for vid in leftover:
+        video = {}
+        video['vid'] = vid
+        video['captions'] = None
+        video['captionAttemps'] = 100
+        video['status'] = False
+        video['statusMessage'] = "No Data from youtube API"
         final.append(video)
 
     return final
@@ -139,6 +179,27 @@ def get_channel_meta(cid):
 
     return final
 
+def get_channel_metas(cids):
+    final = []
+    meta = multiple_channel_meta_datas(cids)
+    if (not is_meta_data_valid(meta)):
+        return final
+
+    for item in meta["items"]:
+        channel = {}
+        snippet = item['snippet']
+        contentDetails = item['contentDetails']
+        statistics = item['statistics']
+
+        channel['cid'] = item['id']
+        channel['name'] = snippet['title']
+        channel['publishedAt'] = toDate(snippet['publishedAt'])
+        channel['catalogId'] = contentDetails['relatedPlaylists']['uploads']
+        channel['videoCount'] = statistics['videoCount']
+
+        final.append(channel)
+    
+    return final
 
 def get_playlistitem_meta(pid, stopdate=datetime(1970,1,1)):
     logging.info('called yt.get_playlistitem_meta')

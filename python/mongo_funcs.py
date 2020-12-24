@@ -15,23 +15,36 @@ db=client.YADskip
 channels = db.channels
 videos = db.videos
 
-attempts_threshold = 5
+attempts_threshold = 1
 inserting_threshold = 20
 sweep_limit = 0 # no limit
 
 # helpful dictionaries to use in mongo queries 
 no_captions = {"$or": [{"captions": {"$exists": False}},{"captions": {"$size": 0}},{"captions": None}]}
-try_for_captions = no_captions.copy()
-try_for_captions["captionAttemps"] = {"$lt": attempts_threshold}
+try_for_captions ={ "$and":[
+    {"$or": 
+        [{"captions": {"$exists": False}},{"captions": {"$size": 0}},{"captions": None}]}, 
+    {"$or":
+        [{"captionAttemps" : {"$exists": False}}, {"captionAttemps" : {"$lt": attempts_threshold}}]}
+    ]}
+# try_for_captions["captionAttemps"] = {"$lt": attempts_threshold}
 
-too_old_for_captions = try_for_captions.copy()
-too_old_for_captions["publishedAt"] = {"$lt":  datetime.now() - timedelta(days=30)}
+missing_metadata = {"status": {"$exists": False},"$or": [{"duration": {"$exists": False}},{"categoryId": {"$exists": False}}]}
+
+# too_old_for_captions = try_for_captions.copy()
+# too_old_for_captions["publishedAt"] = {"$lt":  datetime.now() - timedelta(days=30)}
 has_caps = {"$nor": [
     {"captions": {"$exists": False}},
     {"captions": {"$size": 0}},
     {"captions": None}
 ]}
 
+has_segments = {"segments": {"$exists": True}}
+has_segments_and_caps = has_caps.copy()
+has_segments_and_caps.update(has_segments)
+
+
+# {"captions": {"$exists": False}, "hasCaptions": "true"}
 
 # removed videos that are in the collection and already have captions or failed to get captions too many times
 def filter_vids(vids):
@@ -39,7 +52,7 @@ def filter_vids(vids):
     filtered_vids = []
     for vid in vids:
         video = videos.find_one({'vid':vid})
-        if (not video or (not video['captions'] and video['captionAttemps']<=3)):
+        if (not video):
             filtered_vids.append(vid)
 
     logging.info("Filtered #{} to #{} of videos".format(len(vids),len(filtered_vids)))
@@ -77,9 +90,13 @@ def add_videos(vids):
     return videos.insert_many(vmetas).inserted_ids
 
 # get missing meta data (except captions) from videos that were added with the playlist items
-def update_video_sweep():
+def update_video_sweep(threshold_override = None):
+    thresh = inserting_threshold
+    if threshold_override != None:
+        thresh = threshold_override
+
     logging.info("called update_video_sweep")
-    cursor = videos.find({"$or": [{"duration": {"$exists": False}},{"categoryId": {"$exists": False}}]}).limit(sweep_limit)
+    cursor = videos.find(missing_metadata,no_cursor_timeout=True).limit(sweep_limit)
     
     result = 0
     vids = []
@@ -87,25 +104,28 @@ def update_video_sweep():
     for video in cursor:
         vids.append(video['vid'])
         x+=1
-        if (x >= inserting_threshold):
-            logging.info("getting meta data for #{} videos".format(len(vids)))
+        if (x >= thresh):
+            # logging.info("getting meta data for #{} videos".format(len(vids)))
             video_metas = yt.get_video_metas(",".join(vids))
             result += bulk_upsert_videos(video_metas)
-
+            logging.info("videos so far: #" + str(result))
             vids = []
             x= 0
-
+    
     if (len(vids) > 0):
-        logging.info("getting meta data for #{} videos".format(len(vids)))
+        # logging.info("getting meta data for #{} videos".format(len(vids)))
         video_metas = yt.get_video_metas(",".join(vids))
         result += bulk_upsert_videos(video_metas)
-
+    
+    cursor.close()
     return result
 
 # sweep through all existing videos and get captions for any that don't have them and are under the attempts threshold
-def add_captions_sweep():
+def add_captions_sweep(reverse=False):
     logging.info("called add_captions_sweep")
-    cursor = videos.find(try_for_captions).limit(sweep_limit)
+
+    sorting = -1 if reverse else 1
+    cursor = videos.find(try_for_captions,no_cursor_timeout=True).sort("vid",sorting).limit(sweep_limit)
     
     result = 0
     caption_updates = []
@@ -128,6 +148,7 @@ def add_captions_sweep():
     if (len(caption_updates) > 0):
         result += bulk_upsert_videos(caption_updates)
 
+    cursor.close()
     return result
 
 def bulk_upsert_videos(bulk_videos):
@@ -141,7 +162,7 @@ def bulk_upsert_videos(bulk_videos):
         operations.append(UpdateOne({"vid": video["vid"]},{"$set": video}, upsert=True))
     
     try:
-        result = videos.bulk_write(operations)
+        result = videos.bulk_write(operations, ordered=False)
     except BulkWriteError as bwe:
         print(bwe.details)
         return 0
@@ -159,12 +180,25 @@ def bulk_upsert_channels(bulk_channels):
         operations.append(UpdateOne({"cid": channel["cid"]},{"$set": channel}, upsert=True))
     
     try:
-        result = channels.bulk_write(operations)
+        result = channels.bulk_write(operations, ordered=False)
     except BulkWriteError as bwe:
         print(bwe.details)
         raise
     
     return result.matched_count
+
+def add_channels_from_videos():
+    vids_with_cids = videos.find({"channelId": {"$exists": True}})
+
+    batch = set()
+    for vid in vids_with_cids:
+        batch.add(vid["channelId"])
+    
+    cids = []
+    for cid in batch:
+        cids.append({"cid":cid})
+
+    return bulk_upsert_channels(cids)    
 
 def update_channels():
     logging.info("called mf.update_channels")
@@ -175,13 +209,41 @@ def update_channels():
 
     all_channels = []
     for cid in cids:
-        meta = yt.get_channel_meta(cid)
-        meta['dateCutoff'] = get_date_cutoff(meta['cid'])
-        # logging.info("date cutoff for {} is: {}".format(cid,meta['dateCutoff']))
-        # meta['checkAgain'] = datetime.utcnow() = timedelta(hours=23)
-        all_channels.append(meta)
+        try:
+            meta = yt.get_channel_meta(cid)
+            meta['dateCutoff'] = get_date_cutoff(meta['cid'])
+            # logging.info("date cutoff for {} is: {}".format(cid,meta['dateCutoff']))
+            # meta['checkAgain'] = datetime.utcnow() = timedelta(hours=23)
+            all_channels.append(meta)
+        except Exception as err:
+            print(cid)
+            print(err)
+            raise "AH shit"
 
     return bulk_upsert_channels(all_channels)
+
+def update_channels_in_batches():
+    count = 0 
+    batch = []
+    for chan in channels.find():
+        batch.append(chan['cid'])
+        if len(batch) >= 50:
+            count+=50
+            print("On channel #" + str(count))
+            batch_metas = yt.get_channel_metas(",".join(batch))
+            bulk_upsert_channels(batch_metas)
+            batch = []
+
+    batch_metas = yt.get_channel_metas(",".join(batch))
+    bulk_upsert_channels(batch_metas)
+
+# def test():
+#     batch = []
+#     for chan in channels.find():
+#         batch.append(chan['cid'])
+#         if len(batch) >= 50:
+#             batch_metas = yt.get_channel_metas(",".join(batch))
+#             return batch_metas
 
 def get_date_cutoff(cid):
     recent_video = videos.find_one({"channelId":cid, "captions": {"$not": {"$size": 0}}}, sort=[("publishedAt",-1)])
@@ -206,20 +268,21 @@ def get_stats(should_print=False):
 
     cvc = {}
     for channel in channels.find():
-        cvc[channel['name']] = videos.find({"channelId": channel['cid']}).count()
+        if (not ("newlyCreated" in channel)):
+            count = videos.find({"channelId": channel['cid']}).count()
+            cvc[channel['name']] = count
 
-
-    
     final_stats = {
         'video_count': videos.find().count(),
         'captions_count': videos.find(has_caps).count(),
         'no_captions_count':videos.find(no_captions).count(),
-        'missing_metadata_count': videos.find({"$or": [{"duration": {"$exists": False}},{"categoryId": {"$exists": False}}]}).count(),
+        'missing_metadata_count': videos.find(missing_metadata).count(),
         # 'failed_attempts_avg':,
         'lt_attempts_threshold_count': videos.find(try_for_captions).count(),
         'channel_count': channels.find().count(),
         'channel_video_counts':cvc,
-        'channel_recent_velo':{}
+        'has_segments': videos.find(has_segments).count(),
+        'has_segments&captions': videos.find(has_segments_and_caps).count(),
     }
 
     if (should_print):
@@ -236,7 +299,28 @@ def load_channels_from_file():
 
     bulk_upsert_channels(final)
 
+
 # Overwrite old (>diff days old) videos without captions so they go 
 # over the treshold and wont be checked for captions anymore
-def ignore_empty_captions(diff=30):
-    videos.update_many(too_old_for_captions, {"$set": {"captionAttemps": attempts_threshold}})
+# def ignore_empty_captions(diff=30):
+#     videos.update_many(too_old_for_captions, {"$set": {"captionAttemps": attempts_threshold}})
+
+
+def sweeps():
+    update_video_sweep(1000)
+    add_captions_sweep()
+
+
+channels.find({"Name": {"$exists":False}}).count()
+
+
+# {
+#     "$or": 
+#         [{"captions": {"$exists": False}},{"captions": {"$size": 0}},{"captions": None}], 
+#     "$or":[
+#         {"captionAttemps" : {"$exists": False}}, 
+#         {"captionAttemps" : {"$lt": attempts_threshold}}
+#     ]
+# }
+
+# {"$or": [{"captions": {"$exists": False}},{"captions": {"$size": 0}},{"captions": None}], "$or":[{"captionAttemps" : {"$exists": False}}, {"captionAttemps" : {"$lt": attempts_threshold}}]}
